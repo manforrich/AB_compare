@@ -105,11 +105,7 @@ if app_mode == "📊 單一個股分析":
 
     st.sidebar.subheader("圖表指標")
     ma_days = st.sidebar.multiselect("均線 (MA)", [5, 10, 20, 60, 120], default=[5, 20])
-    
-    # --- 新增：買賣訊號開關 ---
     show_signals = st.sidebar.checkbox("顯示買賣訊號 (MA交叉)", value=True)
-    # -----------------------
-    
     show_bb = st.sidebar.checkbox("布林通道", False)
     show_vp = st.sidebar.checkbox("籌碼密集區", True)
     show_gaps = st.sidebar.checkbox("跳空缺口", True)
@@ -142,57 +138,32 @@ if app_mode == "📊 單一個股分析":
             c3.metric("最低", f"{df['Low'].min():.2f}")
             c4.metric("成交量", f"{int(df['Volume'].iloc[-1]):,}")
 
-            # 2. 繪圖
+            # 2. 繪圖 (主畫面 K 線)
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"), row=1, col=1)
             
-            # 畫均線
             colors = ['orange', 'blue', 'purple', 'black']
-            sorted_ma_days = sorted(ma_days) # 排序，確保短天期在前
-            
+            sorted_ma_days = sorted(ma_days)
             for i, d in enumerate(sorted_ma_days):
                 ma = df['Close'].rolling(d).mean()
                 fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f"MA{d}", line=dict(width=1.5, color=colors[i%4])), row=1, col=1)
 
-            # --- 買賣訊號標示 (新增功能) ---
+            # 主圖表的買賣訊號
             if show_signals and len(sorted_ma_days) >= 2:
-                # 自動抓取最短和第二短的均線來做交叉判斷
                 s_window = sorted_ma_days[0]
                 l_window = sorted_ma_days[1]
-                
-                # 計算臨時訊號
                 temp_s = df['Close'].rolling(s_window).mean()
                 temp_l = df['Close'].rolling(l_window).mean()
-                
-                # 找出黃金交叉 (昨短<昨長 且 今短>今長)
                 buy_cond = (temp_s.shift(1) < temp_l.shift(1)) & (temp_s > temp_l)
-                # 找出死亡交叉 (昨短>昨長 且 今短<今長)
                 sell_cond = (temp_s.shift(1) > temp_l.shift(1)) & (temp_s < temp_l)
                 
-                # 取得買賣點的日期與價格
                 buy_points = df.loc[buy_cond]
                 sell_points = df.loc[sell_cond]
                 
-                # 畫買進訊號 (紅色向上三角)
                 if not buy_points.empty:
-                    fig.add_trace(go.Scatter(
-                        x=buy_points.index, 
-                        y=buy_points['Low'] * 0.98, # 標示在最低價下方一點點
-                        mode='markers',
-                        marker=dict(symbol='triangle-up', size=12, color='#ff2b2b'), # 鮮紅色
-                        name=f'買進 (MA{s_window}穿過MA{l_window})'
-                    ), row=1, col=1)
-                
-                # 畫賣出訊號 (綠色向下三角)
+                    fig.add_trace(go.Scatter(x=buy_points.index, y=buy_points['Low'] * 0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#ff2b2b'), name='主圖買訊'), row=1, col=1)
                 if not sell_points.empty:
-                    fig.add_trace(go.Scatter(
-                        x=sell_points.index, 
-                        y=sell_points['High'] * 1.02, # 標示在最高價上方一點點
-                        mode='markers',
-                        marker=dict(symbol='triangle-down', size=12, color='#00cc00'), # 鮮綠色
-                        name=f'賣出 (MA{s_window}跌破MA{l_window})'
-                    ), row=1, col=1)
-            # ---------------------------
+                    fig.add_trace(go.Scatter(x=sell_points.index, y=sell_points['High'] * 1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#00cc00'), name='主圖賣訊'), row=1, col=1)
 
             if show_bb:
                 mid = df['Close'].rolling(20).mean()
@@ -217,7 +188,7 @@ if app_mode == "📊 單一個股分析":
                 for item in get_google_news(stock_id)[:6]:
                     st.markdown(f"- [{item.title}]({item.link}) ({item.published})")
 
-            # --- 回測結果 ---
+            # --- 回測結果 (新增訊號點) ---
             if run_backtest_btn:
                 st.divider()
                 st.subheader("💰 策略績效大對決")
@@ -227,7 +198,6 @@ if app_mode == "📊 單一個股分析":
                 
                 final1 = res1['Total_Asset'].iloc[-1]
                 pct1 = ((final1 - initial_capital) / initial_capital) * 100
-                
                 final2 = res2['Total_Asset'].iloc[-1]
                 pct2 = ((final2 - initial_capital) / initial_capital) * 100
                 
@@ -240,14 +210,28 @@ if app_mode == "📊 單一個股分析":
                 col_b.metric(f"策略 B ({s2_short}/{s2_long})", f"{pct2:.2f}%", f"{int(final2):,}")
                 col_c.metric("基準 (買進持有)", f"{pct_bh:.2f}%", f"{int(final_bh):,}")
 
+                # --- 畫回測圖表 ---
                 fig_bt = go.Figure()
-                fig_bt.add_trace(go.Scatter(x=res1.index, y=res1['Total_Asset'], mode='lines', name=f'策略 A', line=dict(color='gold', width=2)))
-                fig_bt.add_trace(go.Scatter(x=res2.index, y=res2['Total_Asset'], mode='lines', name=f'策略 B', line=dict(color='cyan', width=2, dash='dot')))
-                fig_bt.update_layout(height=400, hovermode="x unified", title="資金成長比較")
+                
+                # 1. 策略 A (金線 + 實心三角)
+                fig_bt.add_trace(go.Scatter(x=res1.index, y=res1['Total_Asset'], mode='lines', name=f'策略 A 資產', line=dict(color='gold', width=2)))
+                # 抓出買賣點
+                buy_A = res1[res1['Position'] == 1]
+                sell_A = res1[res1['Position'] == -1]
+                fig_bt.add_trace(go.Scatter(x=buy_A.index, y=buy_A['Total_Asset'], mode='markers', marker=dict(symbol='triangle-up', size=10, color='red'), name='A 買進'))
+                fig_bt.add_trace(go.Scatter(x=sell_A.index, y=sell_A['Total_Asset'], mode='markers', marker=dict(symbol='triangle-down', size=10, color='green'), name='A 賣出'))
+
+                # 2. 策略 B (青線 + 空心圓)
+                fig_bt.add_trace(go.Scatter(x=res2.index, y=res2['Total_Asset'], mode='lines', name=f'策略 B 資產', line=dict(color='cyan', width=2, dash='dot')))
+                # 抓出買賣點
+                buy_B = res2[res2['Position'] == 1]
+                sell_B = res2[res2['Position'] == -1]
+                # 使用 circle-open (空心圓) 來區隔
+                fig_bt.add_trace(go.Scatter(x=buy_B.index, y=buy_B['Total_Asset'], mode='markers', marker=dict(symbol='circle-open', size=8, color='red', line_width=2), name='B 買進'))
+                fig_bt.add_trace(go.Scatter(x=sell_B.index, y=sell_B['Total_Asset'], mode='markers', marker=dict(symbol='circle-open', size=8, color='green', line_width=2), name='B 賣出'))
+
+                fig_bt.update_layout(height=400, hovermode="x unified", title="資金成長比較 (含買賣點)")
                 st.plotly_chart(fig_bt, use_container_width=True)
-            
-            with st.expander("🔧 數據檢查 (除錯用)"):
-                st.write(df.head())
 
         else:
             st.error(f"❌ 無法讀取數據: {error_msg}")
