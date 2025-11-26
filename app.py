@@ -161,4 +161,105 @@ if app_mode == "📊 單一個股分析":
                 mid = df['Close'].rolling(20).mean()
                 std = df['Close'].rolling(20).std()
                 fig.add_trace(go.Scatter(x=df.index, y=mid+2*std, line=dict(color='rgba(0,100,255,0.3)'), showlegend=False), row=1, col=1)
-                fig.add_trace
+                fig.add_trace(go.Scatter(x=df.index, y=mid-2*std, line=dict(color='rgba(0,100,255,0.3)'), fill='tonexty', fillcolor='rgba(0,100,255,0.1)', name='布林'), row=1, col=1)
+
+            if show_vp:
+                fig.add_trace(go.Histogram(y=df['Close'], x=df['Volume'], histfunc='sum', orientation='h', nbinsy=50, name="籌碼", xaxis='x3', yaxis='y', marker=dict(color='rgba(31,119,180,0.3)'), hoverinfo='none'))
+                fig.update_layout(xaxis3=dict(overlaying='x', side='top', showgrid=False, visible=False, range=[df['Volume'].max()*3, 0]))
+
+            vol_color = ['green' if c >= o else 'red' for c, o in zip(df['Close'], df['Open'])]
+            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=vol_color, name="量"), row=2, col=1)
+            
+            fig.update_layout(height=600, xaxis_rangeslider_visible=False, legend=dict(orientation="h", y=1.02))
+            fig.update_xaxes(type='date', row=1, col=1)
+            fig.update_xaxes(type='date', row=2, col=1)
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+            with st.expander("📰 相關新聞 (點擊展開)"):
+                for item in get_google_news(stock_id)[:6]:
+                    st.markdown(f"- [{item.title}]({item.link}) ({item.published})")
+
+            # --- 回測結果 ---
+            if run_backtest_btn:
+                st.divider()
+                st.subheader("💰 策略績效大對決")
+                
+                res1 = run_backtest(df, s1_short, s1_long, initial_capital)
+                res2 = run_backtest(df, s2_short, s2_long, initial_capital)
+                
+                final1 = res1['Total_Asset'].iloc[-1]
+                pct1 = ((final1 - initial_capital) / initial_capital) * 100
+                
+                final2 = res2['Total_Asset'].iloc[-1]
+                pct2 = ((final2 - initial_capital) / initial_capital) * 100
+                
+                buy_hold_shares = initial_capital / df['Close'].iloc[0]
+                final_bh = buy_hold_shares * df['Close'].iloc[-1]
+                pct_bh = ((final_bh - initial_capital) / initial_capital) * 100
+
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric(f"策略 A ({s1_short}/{s1_long})", f"{pct1:.2f}%", f"{int(final1):,}")
+                col_b.metric(f"策略 B ({s2_short}/{s2_long})", f"{pct2:.2f}%", f"{int(final2):,}")
+                col_c.metric("基準 (買進持有)", f"{pct_bh:.2f}%", f"{int(final_bh):,}")
+
+                fig_bt = go.Figure()
+                fig_bt.add_trace(go.Scatter(x=res1.index, y=res1['Total_Asset'], mode='lines', name=f'策略 A', line=dict(color='gold', width=2)))
+                fig_bt.add_trace(go.Scatter(x=res2.index, y=res2['Total_Asset'], mode='lines', name=f'策略 B', line=dict(color='cyan', width=2, dash='dot')))
+                fig_bt.update_layout(height=400, hovermode="x unified", title="資金成長比較")
+                st.plotly_chart(fig_bt, use_container_width=True)
+            
+            # --- 除錯工具：萬一圖還是出不來，可以看這裡 ---
+            with st.expander("🔧 數據檢查 (除錯用)"):
+                st.write("如果圖表空白，請檢查以下數據是否正常：")
+                st.write(df.head())
+
+        else:
+            st.error(f"❌ 無法讀取數據: {error_msg}")
+
+# ========================================================
+#  模式 B: 策略選股器
+# ========================================================
+elif app_mode == "🔍 策略選股器":
+    st.title("🔍 均線策略選股器")
+    c1, c2 = st.columns(2)
+    s_ma = c1.number_input("短均線", value=5)
+    l_ma = c2.number_input("長均線", value=20)
+    
+    default_tickers = "2330, 2317, 2454, 2308, 2303, 2603, 2609, 2615, 2881, 2882, 0050, 0056, 00878, 3231, 2382, 6669"
+    user_tickers = st.text_area("觀察清單", default_tickers)
+    
+    if st.button("🚀 開始掃描"):
+        tickers = [t.strip()+".TW" for t in user_tickers.split(",") if t.strip()]
+        results = []
+        bar = st.progress(0)
+        
+        for i, t in enumerate(tickers):
+            bar.progress((i+1)/len(tickers))
+            try:
+                # 選股器也要用一樣的邏輯修復
+                df = yf.download(t, period="3mo", auto_adjust=True, progress=False)
+                if not df.empty and len(df) > l_ma:
+                    if isinstance(df.columns, pd.MultiIndex): 
+                        df.columns = df.columns.get_level_values(0)
+                        
+                    df['S'] = df['Close'].rolling(s_ma).mean()
+                    df['L'] = df['Close'].rolling(l_ma).mean()
+                    curr, prev = df.iloc[-1], df.iloc[-2]
+                    
+                    is_gold = (prev['S'] < prev['L']) and (curr['S'] > curr['L'])
+                    is_bull = (curr['Close'] > curr['S']) and (curr['S'] > curr['L'])
+                    
+                    if is_gold or is_bull:
+                        results.append({
+                            "代碼": t.replace(".TW",""), 
+                            "現價": f"{curr['Close']:.2f}",
+                            "訊號": "✨ 黃金交叉" if is_gold else "🔥 多頭排列"
+                        })
+            except: continue
+            
+        bar.empty()
+        if results:
+            st.success(f"找到 {len(results)} 檔")
+            st.dataframe(pd.DataFrame(results).style.applymap(lambda v: 'background-color: #d4edda' if '黃金' in v else '#fff3cd', subset=['訊號']), use_container_width=True)
+        else: st.warning("無符合條件股票")
