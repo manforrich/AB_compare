@@ -45,6 +45,16 @@ def get_google_news(query):
         return feed.entries
     except: return []
 
+# --- 新增：MDD 計算函數 ---
+def calculate_mdd(series):
+    # 計算累積最大值 (Running Maximum)
+    roll_max = series.cummax()
+    # 計算當前價格與累積最大值的差距百分比
+    drawdown = (series - roll_max) / roll_max
+    # 抓出最小的值 (也就是跌最深的那次)
+    max_drawdown = drawdown.min()
+    return max_drawdown * 100 # 回傳百分比
+
 def run_backtest(df, short_window, long_window, initial_capital):
     data = df.copy()
     data['Close'] = pd.to_numeric(data['Close'], errors='coerce')
@@ -138,7 +148,7 @@ if app_mode == "📊 單一個股分析":
             c3.metric("最低", f"{df['Low'].min():.2f}")
             c4.metric("成交量", f"{int(df['Volume'].iloc[-1]):,}")
 
-            # 2. 繪圖 (主畫面 K 線)
+            # 2. 繪圖
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"), row=1, col=1)
             
@@ -148,7 +158,6 @@ if app_mode == "📊 單一個股分析":
                 ma = df['Close'].rolling(d).mean()
                 fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f"MA{d}", line=dict(width=1.5, color=colors[i%4])), row=1, col=1)
 
-            # 主圖表的買賣訊號
             if show_signals and len(sorted_ma_days) >= 2:
                 s_window = sorted_ma_days[0]
                 l_window = sorted_ma_days[1]
@@ -188,49 +197,61 @@ if app_mode == "📊 單一個股分析":
                 for item in get_google_news(stock_id)[:6]:
                     st.markdown(f"- [{item.title}]({item.link}) ({item.published})")
 
-            # --- 回測結果 (新增訊號點) ---
+            # --- 回測結果 (新增 MDD) ---
             if run_backtest_btn:
                 st.divider()
-                st.subheader("💰 策略績效大對決")
+                st.subheader("💰 策略績效與風險分析")
                 
                 res1 = run_backtest(df, s1_short, s1_long, initial_capital)
                 res2 = run_backtest(df, s2_short, s2_long, initial_capital)
                 
-                final1 = res1['Total_Asset'].iloc[-1]
-                pct1 = ((final1 - initial_capital) / initial_capital) * 100
-                final2 = res2['Total_Asset'].iloc[-1]
-                pct2 = ((final2 - initial_capital) / initial_capital) * 100
+                # 計算 Benchmark (買進持有) 的資產曲線，以便計算 MDD
+                buy_hold_series = (initial_capital / df['Close'].iloc[0]) * df['Close']
                 
-                buy_hold_shares = initial_capital / df['Close'].iloc[0]
-                final_bh = buy_hold_shares * df['Close'].iloc[-1]
-                pct_bh = ((final_bh - initial_capital) / initial_capital) * 100
+                # 計算報酬率
+                pct1 = ((res1['Total_Asset'].iloc[-1] - initial_capital) / initial_capital) * 100
+                pct2 = ((res2['Total_Asset'].iloc[-1] - initial_capital) / initial_capital) * 100
+                pct_bh = ((buy_hold_series.iloc[-1] - initial_capital) / initial_capital) * 100
+
+                # 計算 MDD
+                mdd1 = calculate_mdd(res1['Total_Asset'])
+                mdd2 = calculate_mdd(res2['Total_Asset'])
+                mdd_bh = calculate_mdd(buy_hold_series)
 
                 col_a, col_b, col_c = st.columns(3)
-                col_a.metric(f"策略 A ({s1_short}/{s1_long})", f"{pct1:.2f}%", f"{int(final1):,}")
-                col_b.metric(f"策略 B ({s2_short}/{s2_long})", f"{pct2:.2f}%", f"{int(final2):,}")
-                col_c.metric("基準 (買進持有)", f"{pct_bh:.2f}%", f"{int(final_bh):,}")
+                
+                with col_a:
+                    st.info(f"策略 A ({s1_short}/{s1_long})")
+                    st.metric("總報酬率", f"{pct1:.2f}%", f"{int(res1['Total_Asset'].iloc[-1] - initial_capital):,}")
+                    st.metric("📉 最大回撤 (MDD)", f"{mdd1:.2f}%", help="資產從最高點滑落的最大幅度，越小越安全")
+                
+                with col_b:
+                    st.info(f"策略 B ({s2_short}/{s2_long})")
+                    st.metric("總報酬率", f"{pct2:.2f}%", f"{int(res2['Total_Asset'].iloc[-1] - initial_capital):,}")
+                    st.metric("📉 最大回撤 (MDD)", f"{mdd2:.2f}%")
 
-                # --- 畫回測圖表 ---
+                with col_c:
+                    st.warning("基準 (買進持有)")
+                    st.metric("總報酬率", f"{pct_bh:.2f}%", f"{int(buy_hold_series.iloc[-1] - initial_capital):,}")
+                    st.metric("📉 最大回撤 (MDD)", f"{mdd_bh:.2f}%")
+
                 fig_bt = go.Figure()
                 
-                # 1. 策略 A (金線 + 實心三角)
+                # 策略 A
                 fig_bt.add_trace(go.Scatter(x=res1.index, y=res1['Total_Asset'], mode='lines', name=f'策略 A 資產', line=dict(color='gold', width=2)))
-                # 抓出買賣點
                 buy_A = res1[res1['Position'] == 1]
                 sell_A = res1[res1['Position'] == -1]
                 fig_bt.add_trace(go.Scatter(x=buy_A.index, y=buy_A['Total_Asset'], mode='markers', marker=dict(symbol='triangle-up', size=10, color='red'), name='A 買進'))
                 fig_bt.add_trace(go.Scatter(x=sell_A.index, y=sell_A['Total_Asset'], mode='markers', marker=dict(symbol='triangle-down', size=10, color='green'), name='A 賣出'))
 
-                # 2. 策略 B (青線 + 空心圓)
+                # 策略 B
                 fig_bt.add_trace(go.Scatter(x=res2.index, y=res2['Total_Asset'], mode='lines', name=f'策略 B 資產', line=dict(color='cyan', width=2, dash='dot')))
-                # 抓出買賣點
                 buy_B = res2[res2['Position'] == 1]
                 sell_B = res2[res2['Position'] == -1]
-                # 使用 circle-open (空心圓) 來區隔
                 fig_bt.add_trace(go.Scatter(x=buy_B.index, y=buy_B['Total_Asset'], mode='markers', marker=dict(symbol='circle-open', size=8, color='red', line_width=2), name='B 買進'))
                 fig_bt.add_trace(go.Scatter(x=sell_B.index, y=sell_B['Total_Asset'], mode='markers', marker=dict(symbol='circle-open', size=8, color='green', line_width=2), name='B 賣出'))
 
-                fig_bt.update_layout(height=400, hovermode="x unified", title="資金成長比較 (含買賣點)")
+                fig_bt.update_layout(height=400, hovermode="x unified", title="資金成長比較")
                 st.plotly_chart(fig_bt, use_container_width=True)
 
         else:
