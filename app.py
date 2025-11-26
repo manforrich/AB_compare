@@ -14,11 +14,10 @@ st.sidebar.title("🚀 功能選單")
 app_mode = st.sidebar.selectbox("選擇功能", ["📊 單一個股分析", "🔍 策略選股器"])
 
 # ========================================================
-#  共用函數區 (核心修復：強制格式化)
+#  共用函數區
 # ========================================================
 def get_stock_data(ticker, mode="預設區間", period="1y", start=None, end=None):
     try:
-        # 使用 yf.download 抓取
         if mode == "預設區間":
             hist = yf.download(ticker, period=period, auto_adjust=True, progress=False)
         else:
@@ -27,12 +26,10 @@ def get_stock_data(ticker, mode="預設區間", period="1y", start=None, end=Non
         if hist.empty: 
             return None, "Yahoo Finance 回傳空資料，請檢查代碼。"
 
-        # --- 關鍵修復：處理 MultiIndex ---
-        # 如果欄位是多層的 (例如: ('Close', '2330.TW'))，我們只保留第一層 ('Close')
+        # 處理 MultiIndex
         if isinstance(hist.columns, pd.MultiIndex):
             hist.columns = hist.columns.get_level_values(0)
             
-        # 確保所有必要的欄位都在
         required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         if not all(col in hist.columns for col in required_cols):
             return None, f"資料欄位缺失，抓到的欄位: {list(hist.columns)}"
@@ -50,20 +47,14 @@ def get_google_news(query):
 
 def run_backtest(df, short_window, long_window, initial_capital):
     data = df.copy()
-    
-    # 確保是數值型態 (防呆)
     data['Close'] = pd.to_numeric(data['Close'], errors='coerce')
-    
     data['Short_MA'] = data['Close'].rolling(window=short_window).mean()
     data['Long_MA'] = data['Close'].rolling(window=long_window).mean()
-    
     data['Signal'] = 0
-    # 避免前面的 NaN 造成問題
     data.iloc[long_window:, data.columns.get_loc('Signal')] = 0 
     
     mask = data['Short_MA'] > data['Long_MA']
     data.loc[mask, 'Signal'] = 1
-    
     data['Position'] = data['Signal'].diff()
     
     cash = initial_capital
@@ -72,7 +63,6 @@ def run_backtest(df, short_window, long_window, initial_capital):
     
     for i in range(len(data)):
         price = data['Close'].iloc[i]
-        # 如果價格是 NaN (例如停牌)，則跳過或延用上一次資產
         if pd.isna(price):
             asset_history.append(asset_history[-1] if asset_history else initial_capital)
             continue
@@ -85,7 +75,6 @@ def run_backtest(df, short_window, long_window, initial_capital):
         elif position_change == -1 and holdings > 0:
             cash = holdings * price
             holdings = 0
-            
         current_asset = cash + (holdings * price)
         asset_history.append(current_asset)
         
@@ -116,6 +105,11 @@ if app_mode == "📊 單一個股分析":
 
     st.sidebar.subheader("圖表指標")
     ma_days = st.sidebar.multiselect("均線 (MA)", [5, 10, 20, 60, 120], default=[5, 20])
+    
+    # --- 新增：買賣訊號開關 ---
+    show_signals = st.sidebar.checkbox("顯示買賣訊號 (MA交叉)", value=True)
+    # -----------------------
+    
     show_bb = st.sidebar.checkbox("布林通道", False)
     show_vp = st.sidebar.checkbox("籌碼密集區", True)
     show_gaps = st.sidebar.checkbox("跳空缺口", True)
@@ -152,10 +146,53 @@ if app_mode == "📊 單一個股分析":
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K線"), row=1, col=1)
             
+            # 畫均線
             colors = ['orange', 'blue', 'purple', 'black']
-            for i, d in enumerate(ma_days):
+            sorted_ma_days = sorted(ma_days) # 排序，確保短天期在前
+            
+            for i, d in enumerate(sorted_ma_days):
                 ma = df['Close'].rolling(d).mean()
                 fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f"MA{d}", line=dict(width=1.5, color=colors[i%4])), row=1, col=1)
+
+            # --- 買賣訊號標示 (新增功能) ---
+            if show_signals and len(sorted_ma_days) >= 2:
+                # 自動抓取最短和第二短的均線來做交叉判斷
+                s_window = sorted_ma_days[0]
+                l_window = sorted_ma_days[1]
+                
+                # 計算臨時訊號
+                temp_s = df['Close'].rolling(s_window).mean()
+                temp_l = df['Close'].rolling(l_window).mean()
+                
+                # 找出黃金交叉 (昨短<昨長 且 今短>今長)
+                buy_cond = (temp_s.shift(1) < temp_l.shift(1)) & (temp_s > temp_l)
+                # 找出死亡交叉 (昨短>昨長 且 今短<今長)
+                sell_cond = (temp_s.shift(1) > temp_l.shift(1)) & (temp_s < temp_l)
+                
+                # 取得買賣點的日期與價格
+                buy_points = df.loc[buy_cond]
+                sell_points = df.loc[sell_cond]
+                
+                # 畫買進訊號 (紅色向上三角)
+                if not buy_points.empty:
+                    fig.add_trace(go.Scatter(
+                        x=buy_points.index, 
+                        y=buy_points['Low'] * 0.98, # 標示在最低價下方一點點
+                        mode='markers',
+                        marker=dict(symbol='triangle-up', size=12, color='#ff2b2b'), # 鮮紅色
+                        name=f'買進 (MA{s_window}穿過MA{l_window})'
+                    ), row=1, col=1)
+                
+                # 畫賣出訊號 (綠色向下三角)
+                if not sell_points.empty:
+                    fig.add_trace(go.Scatter(
+                        x=sell_points.index, 
+                        y=sell_points['High'] * 1.02, # 標示在最高價上方一點點
+                        mode='markers',
+                        marker=dict(symbol='triangle-down', size=12, color='#00cc00'), # 鮮綠色
+                        name=f'賣出 (MA{s_window}跌破MA{l_window})'
+                    ), row=1, col=1)
+            # ---------------------------
 
             if show_bb:
                 mid = df['Close'].rolling(20).mean()
@@ -209,9 +246,7 @@ if app_mode == "📊 單一個股分析":
                 fig_bt.update_layout(height=400, hovermode="x unified", title="資金成長比較")
                 st.plotly_chart(fig_bt, use_container_width=True)
             
-            # --- 除錯工具：萬一圖還是出不來，可以看這裡 ---
             with st.expander("🔧 數據檢查 (除錯用)"):
-                st.write("如果圖表空白，請檢查以下數據是否正常：")
                 st.write(df.head())
 
         else:
@@ -237,7 +272,6 @@ elif app_mode == "🔍 策略選股器":
         for i, t in enumerate(tickers):
             bar.progress((i+1)/len(tickers))
             try:
-                # 選股器也要用一樣的邏輯修復
                 df = yf.download(t, period="3mo", auto_adjust=True, progress=False)
                 if not df.empty and len(df) > l_ma:
                     if isinstance(df.columns, pd.MultiIndex): 
