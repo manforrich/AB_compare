@@ -5,6 +5,7 @@ from plotly.subplots import make_subplots
 import feedparser
 import datetime
 import pandas as pd
+import pytz # 用於處理時區
 
 # 1. 設定網頁標題
 st.set_page_config(page_title="全方位股票分析系統 (Pro版)", layout="wide")
@@ -61,71 +62,47 @@ def calculate_macd(df, fast=12, slow=26, signal=9):
     data['MACD_Hist'] = data['MACD'] - data['Signal_Line']
     return data
 
-# --- 回測函數 ---
-def run_backtest(df, short_window, long_window, initial_capital, use_macd_filter=False):
-    data = df.copy()
-    data['Close'] = pd.to_numeric(data['Close'], errors='coerce')
-    data['Short_MA'] = data['Close'].rolling(window=short_window).mean()
-    data['Long_MA'] = data['Close'].rolling(window=long_window).mean()
+# --- [新增] 預估成交量計算函數 ---
+def calculate_volume_analysis(df):
+    # 1. 取得最後一筆資料的時間與數值
+    last_date = df.index[-1]
+    current_vol = df['Volume'].iloc[-1]
     
-    if 'MACD' not in data.columns:
-        data = calculate_macd(data)
-
-    data['Signal'] = 0
-    data.iloc[long_window:, data.columns.get_loc('Signal')] = 0 
+    # 2. 計算 5 日均量 (作為基準)
+    vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
     
-    if not use_macd_filter:
-        mask = data['Short_MA'] > data['Long_MA']
-        data.loc[mask, 'Signal'] = 1
-    else:
-        signals = []
-        status = 0
-        for i in range(len(data)):
-            s_ma = data['Short_MA'].iloc[i]
-            l_ma = data['Long_MA'].iloc[i]
-            macd_val = data['MACD'].iloc[i]
-            
-            if pd.isna(s_ma) or pd.isna(l_ma) or pd.isna(macd_val):
-                signals.append(0)
-                continue
-            
-            if status == 0:
-                if (s_ma > l_ma) and (macd_val > 0): status = 1
-            elif status == 1:
-                if (s_ma < l_ma) and (macd_val < 0): status = 0
-            signals.append(status)
-        data['Signal'] = signals
-
-    data['Position'] = data['Signal'].diff()
-    cash = initial_capital
-    holdings = 0
-    asset_history = []
-    trade_log = [] 
+    # 3. 判斷是否為「今天」且「盤中」
+    # 設定台灣時區
+    tw_tz = pytz.timezone('Asia/Taipei')
+    now = datetime.datetime.now(tw_tz)
     
-    for i in range(len(data)):
-        price = data['Close'].iloc[i]
-        date = data.index[i]
+    # 簡單判斷：如果最後一筆資料日期是今天，才做預估
+    is_today = last_date.date() == now.date()
+    
+    est_volume = current_vol
+    vol_status = "收盤確認"
+    
+    if is_today:
+        # 台股開盤時間 09:00 - 13:30 (共 270 分鐘)
+        start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        end_time = now.replace(hour=13, minute=30, second=0, microsecond=0)
         
-        if pd.isna(price):
-            asset_history.append(asset_history[-1] if asset_history else initial_capital)
-            continue
-
-        position_change = data['Position'].iloc[i]
-        
-        if position_change == 1 and cash > 0:
-            holdings = cash / price
-            cash = 0
-            trade_log.append({"日期": date.strftime('%Y-%m-%d'), "動作": "買進", "價格": price, "資產": holdings*price})
-        elif position_change == -1 and holdings > 0:
-            cash = holdings * price
-            holdings = 0
-            trade_log.append({"日期": date.strftime('%Y-%m-%d'), "動作": "賣出", "價格": price, "資產": cash})
+        if start_time < now < end_time:
+            # 計算開盤過了幾分鐘
+            delta = now - start_time
+            elapsed_minutes = delta.total_seconds() / 60
             
-        asset_history.append(cash + (holdings * price))
-        
-    data['Total_Asset'] = asset_history
-    trade_df = pd.DataFrame(trade_log)
-    return data, trade_df
+            if elapsed_minutes > 0:
+                # 預估量公式：目前量 * (270 / 已過分鐘)
+                est_volume = current_vol * (270 / elapsed_minutes)
+                vol_status = "盤中預估 ⏳"
+        elif now < start_time:
+             vol_status = "尚未開盤 💤"
+    
+    # 4. 計算量能比 (預估量 / 5日均量)
+    vol_ratio = est_volume / vol_ma5 if vol_ma5 > 0 else 0
+    
+    return est_volume, vol_ma5, vol_ratio, vol_status
 
 # --- [新增] 均線扣抵與預測函數 ---
 def render_deduction_analysis(df, ma_days=20):
@@ -202,6 +179,71 @@ def render_deduction_analysis(df, ma_days=20):
     fig.update_layout(title=f"MA{ma_days} 扣抵位置示意圖", height=400, xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
+# --- 回測函數 ---
+def run_backtest(df, short_window, long_window, initial_capital, use_macd_filter=False):
+    data = df.copy()
+    data['Close'] = pd.to_numeric(data['Close'], errors='coerce')
+    data['Short_MA'] = data['Close'].rolling(window=short_window).mean()
+    data['Long_MA'] = data['Close'].rolling(window=long_window).mean()
+    
+    if 'MACD' not in data.columns:
+        data = calculate_macd(data)
+
+    data['Signal'] = 0
+    data.iloc[long_window:, data.columns.get_loc('Signal')] = 0 
+    
+    if not use_macd_filter:
+        mask = data['Short_MA'] > data['Long_MA']
+        data.loc[mask, 'Signal'] = 1
+    else:
+        signals = []
+        status = 0
+        for i in range(len(data)):
+            s_ma = data['Short_MA'].iloc[i]
+            l_ma = data['Long_MA'].iloc[i]
+            macd_val = data['MACD'].iloc[i]
+            
+            if pd.isna(s_ma) or pd.isna(l_ma) or pd.isna(macd_val):
+                signals.append(0)
+                continue
+            
+            if status == 0:
+                if (s_ma > l_ma) and (macd_val > 0): status = 1
+            elif status == 1:
+                if (s_ma < l_ma) and (macd_val < 0): status = 0
+            signals.append(status)
+        data['Signal'] = signals
+
+    data['Position'] = data['Signal'].diff()
+    cash = initial_capital
+    holdings = 0
+    asset_history = []
+    trade_log = [] 
+    
+    for i in range(len(data)):
+        price = data['Close'].iloc[i]
+        date = data.index[i]
+        
+        if pd.isna(price):
+            asset_history.append(asset_history[-1] if asset_history else initial_capital)
+            continue
+
+        position_change = data['Position'].iloc[i]
+        
+        if position_change == 1 and cash > 0:
+            holdings = cash / price
+            cash = 0
+            trade_log.append({"日期": date.strftime('%Y-%m-%d'), "動作": "買進", "價格": price, "資產": holdings*price})
+        elif position_change == -1 and holdings > 0:
+            cash = holdings * price
+            holdings = 0
+            trade_log.append({"日期": date.strftime('%Y-%m-%d'), "動作": "賣出", "價格": price, "資產": cash})
+            
+        asset_history.append(cash + (holdings * price))
+        
+    data['Total_Asset'] = asset_history
+    trade_df = pd.DataFrame(trade_log)
+    return data, trade_df
 
 # ========================================================
 #   模式 A: 單一個股分析
@@ -262,18 +304,33 @@ if app_mode == "📊 單一個股分析":
             roll_max = df['Close'].cummax()
             df['Drawdown'] = (df['Close'] - roll_max) / roll_max
 
-            # 1. 基本資訊
-            st.subheader(f"{stock_id} 走勢分析")
-            c1, c2, c3, c4 = st.columns(4)
+            # === [新增] 呼叫預估量計算 ===
+            est_vol, vol_ma5, vol_ratio, vol_status = calculate_volume_analysis(df)
+
+            # 1. 基本資訊 (擴充為 5 欄)
+            st.subheader(f"{stock_id} 走勢與量能分析")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            
             close = df['Close'].iloc[-1]
             change = close - df['Close'].iloc[-2]
             pct = (change / df['Close'].iloc[-2]) * 100
             hist_mdd = calculate_mdd(df['Close'])
             
             c1.metric("當前股價", f"{close:.2f}", f"{change:.2f} ({pct:.2f}%)")
-            c2.metric("區間最高", f"{df['High'].max():.2f}")
-            c3.metric("區間最低", f"{df['Low'].min():.2f}")
-            c4.metric("歷史 MDD (買持)", f"{hist_mdd:.2f}%")
+            
+            # 預估成交量顯示邏輯
+            ratio_color = "normal"
+            if vol_ratio >= 1.5: ratio_color = "inverse" # 爆量 (紅)
+            elif vol_ratio <= 0.7: ratio_color = "off"   # 量縮 (灰/綠)
+            
+            c2.metric(f"預估成交量 ({vol_status})", 
+                      f"{int(est_volume):,}", 
+                      f"量比: {vol_ratio:.1f}x", 
+                      delta_color=ratio_color)
+
+            c3.metric("5日均量 (MV5)", f"{int(vol_ma5):,}")
+            c4.metric("區間最高", f"{df['High'].max():.2f}")
+            c5.metric("歷史 MDD", f"{hist_mdd:.2f}%")
 
             # 2. 技術分析主圖
             fig = make_subplots(
@@ -308,7 +365,7 @@ if app_mode == "📊 單一個股分析":
             fig.update_yaxes(title_text="回撤 %", tickformat=".0%", row=4, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
-            # === [整合功能] 均線扣抵分析 ===
+            # === [新增] 均線扣抵分析 ===
             st.divider()
             if ma_days:
                 st.subheader("🔮 均線扣抵策略分析")
