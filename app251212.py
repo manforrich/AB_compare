@@ -304,7 +304,7 @@ if app_mode == "📊 單一個股分析":
             roll_max = df['Close'].cummax()
             df['Drawdown'] = (df['Close'] - roll_max) / roll_max
 
-            # === [新增] 呼叫預估量計算 ===
+            # === [修正後] 呼叫預估量計算 ===
             est_vol, vol_ma5, vol_ratio, vol_status = calculate_volume_analysis(df)
 
             # 1. 基本資訊 (擴充為 5 欄)
@@ -323,8 +323,9 @@ if app_mode == "📊 單一個股分析":
             if vol_ratio >= 1.5: ratio_color = "inverse" # 爆量 (紅)
             elif vol_ratio <= 0.7: ratio_color = "off"   # 量縮 (灰/綠)
             
+            # 修正變數名稱: 使用 est_vol
             c2.metric(f"預估成交量 ({vol_status})", 
-                      f"{int(est_volume):,}", 
+                      f"{int(est_vol):,}", 
                       f"量比: {vol_ratio:.1f}x", 
                       delta_color=ratio_color)
 
