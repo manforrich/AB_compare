@@ -271,7 +271,7 @@ if app_mode == "📊 單一個股分析":
         end_date = st.sidebar.date_input("結束", datetime.date.today())
 
     st.sidebar.subheader("圖表指標")
-    ma_days = st.sidebar.multiselect("均線 (MA)", [5, 20, 60, 120, 240], default=[20, 60])
+    ma_days = st.sidebar.multiselect("均線 (MA)", [5, 10, 20, 60, 120, 240], default=[20, 60])
     show_signals = st.sidebar.checkbox("顯示買賣訊號", value=True)
     show_bb = st.sidebar.checkbox("布林通道", False)
     show_vp = st.sidebar.checkbox("籌碼密集區", True)
