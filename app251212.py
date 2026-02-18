@@ -271,7 +271,7 @@ if app_mode == "📊 單一個股分析":
         end_date = st.sidebar.date_input("結束", datetime.date.today())
 
     st.sidebar.subheader("圖表指標")
-    ma_days = st.sidebar.multiselect("均線 (MA)", [5, 10, 20, 60, 120, 240], default=[20, 60])
+    ma_days = st.sidebar.multiselect("均線 (MA)", [5, 10, 20, 60, 120, 240], default=[5, 10])
     show_signals = st.sidebar.checkbox("顯示買賣訊號", value=True)
     show_bb = st.sidebar.checkbox("布林通道", False)
     show_vp = st.sidebar.checkbox("籌碼密集區", True)
@@ -283,11 +283,11 @@ if app_mode == "📊 單一個股分析":
     
     st.sidebar.markdown("**策略 A (純均線)**")
     s1_short = st.sidebar.number_input("A 短均線", value=5, key="s1_s")
-    s1_long = st.sidebar.number_input("A 長均線", value=20, key="s1_l")
+    s1_long = st.sidebar.number_input("A 長均線", value=10, key="s1_l")
     
     st.sidebar.divider()
     st.sidebar.markdown("**策略 B (均線+MACD)**")
-    use_macd_b = st.sidebar.checkbox("✅ 啟用 MACD 濾網", value=True)
+    use_macd_b = st.sidebar.checkbox("✅ 啟用 MACD 濾網", value=False)
     s2_short = st.sidebar.number_input("B 短均線", value=5, key="s2_s")
     s2_long = st.sidebar.number_input("B 長均線", value=20, key="s2_l")
     
